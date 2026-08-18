@@ -70,9 +70,12 @@ class PageSelectionAgent:
     baseline_decay: float = 0.8
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
 
+    normalize_advantage: bool = True
+
     theta: np.ndarray = field(init=False)
     baseline: float = field(init=False, default=0.0)
     _seen_reward: bool = field(init=False, default=False)
+    _reward_var: float = field(init=False, default=0.0)
     history: list[dict] = field(init=False, default_factory=list)
 
     def __post_init__(self) -> None:
@@ -148,6 +151,21 @@ class PageSelectionAgent:
                 self.baseline = reward
                 self._seen_reward = True
             advantage = reward - self.baseline
+
+            if self.normalize_advantage:
+                # A recompensa de consenso satura rapido: medido, ela ficava em
+                # ~0.72 com variacao da ordem de 0.005, e o passo resultante era
+                # pequeno demais para mover a politica -- ela terminava
+                # indistinguivel da uniforme. Dividir pelo desvio-padrao movel
+                # torna o passo invariante a escala da recompensa, preservando
+                # apenas o SINAL de qual segmento foi melhor que a media.
+                self._reward_var = (
+                    self.baseline_decay * self._reward_var
+                    + (1 - self.baseline_decay) * advantage**2
+                )
+                std = float(np.sqrt(self._reward_var))
+                if std > 1e-8:
+                    advantage /= std
 
             if self.algorithm == "reinforce":
                 n = max(1, action.n_pages)

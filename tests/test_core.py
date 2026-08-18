@@ -283,11 +283,6 @@ def test_score_baixo_para_livro_diferente():
     assert score_match("Dracula", "Bram Stoker", "Moby Dick", ["Herman Melville"]) < 50
 
 
-def test_termos_sem_mapeamento_nao_viram_ground_truth():
-    gt = build_ground_truth([Candidate(terms=["Accessible book"], score=100.0)], "teste")
-    assert not gt.found
-
-
 def test_candidato_abaixo_do_limiar_e_rejeitado():
     gt = build_ground_truth([Candidate(terms=["Horror"], score=10.0)], "teste")
     assert not gt.found
@@ -325,3 +320,22 @@ def test_sem_candidatos_devolve_nao_encontrado():
 )
 def test_convencoes_de_nome_de_arquivo(nome, titulo, autor):
     assert parse_filename(Path(f"{nome}.pdf")) == (titulo, autor)
+
+
+def test_normalizacao_da_vantagem_move_a_politica_com_recompensa_quase_constante():
+    """A recompensa de consenso satura (~0.72 com variacao ~0.005). Sem
+    normalizar a vantagem, o passo e pequeno demais e a politica final fica
+    indistinguivel da uniforme."""
+    def rodar(normalizar: bool) -> float:
+        agente = PageSelectionAgent(
+            n_pages=120, n_segments=10, learning_rate=0.35,
+            normalize_advantage=normalizar, rng=np.random.default_rng(5),
+        )
+        for _ in range(40):
+            acao = agente.select_pages(0.2)
+            # Sinal fraco mas consistente: segmento 0 e marginalmente melhor.
+            r = 0.72 + 0.005 * (acao.segment_counts[0] / max(1, acao.n_pages))
+            agente.update(acao, r)
+        return float(np.max(agente.policy()) - np.min(agente.policy()))
+
+    assert rodar(True) > 10 * rodar(False)

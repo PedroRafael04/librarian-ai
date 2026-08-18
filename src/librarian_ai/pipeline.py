@@ -233,6 +233,7 @@ def run_book(
         learning_rate=float(cfg.get("agent.learning_rate", 0.35)),
         temperature=float(cfg.get("agent.temperature", 1.0)),
         baseline_decay=float(cfg.get("agent.baseline_decay", 0.8)),
+        normalize_advantage=bool(cfg.get("agent.normalize_advantage", True)),
         rng=rng,
     )
 

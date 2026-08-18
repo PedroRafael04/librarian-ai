@@ -32,6 +32,9 @@ agent:
   learning_rate: 0.35
   temperature: 1.0
   baseline_decay: 0.8          # media movel usada como baseline do REINFORCE
+  normalize_advantage: true    # divide a vantagem pelo desvio-padrao movel.
+                               # Sem isso a recompensa de consenso satura e a
+                               # politica final fica identica a uniforme
   reward:
     mode: auto                 # auto | consensus | supervised
                                # auto = supervised se houver ground truth, senao consensus
