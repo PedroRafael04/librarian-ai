@@ -1,0 +1,71 @@
+# ============================================================================
+# Librarian AI - configuracao do experimento
+# Todos os parametros do enunciado sao ajustaveis aqui (ou via flags da CLI).
+# ============================================================================
+
+corpus:
+  input_dir: data/raw          # PDFs de entrada
+  cache_dir: data/cache        # texto extraido, cacheado por hash do arquivo
+  min_chars_per_page: 120      # paginas com menos texto que isso sao descartadas
+                               # (capas, folhas de rosto, paginas so com imagem)
+  max_pages: null              # limite opcional de paginas por livro (debug)
+
+sampling:
+  # "entre 15 a 30% das paginas" -> a taxa e sorteada nesse intervalo a cada geracao
+  min_rate: 0.15
+  max_rate: 0.30
+  fixed_rate: null             # se definido, ignora o intervalo acima
+  segments: 10                 # nº de bracos do bandit (o livro e fatiado em K partes)
+
+generations:
+  n: 12                        # N geracoes
+  seed: 42
+  early_stop:
+    enabled: true
+    min_generations: 5
+    jsd_threshold: 0.01        # para quando a agregacao estabiliza
+    patience: 3
+
+agent:
+  strategy: bandit             # bandit | uniform
+  algorithm: reinforce         # reinforce | exp3
+  learning_rate: 0.35
+  temperature: 1.0
+  baseline_decay: 0.8          # media movel usada como baseline do REINFORCE
+  reward:
+    mode: auto                 # auto | consensus | supervised
+                               # auto = supervised se houver ground truth, senao consensus
+    confidence_weight: 0.3     # peso do termo de (baixa) entropia na recompensa
+
+classifier:
+  backend: zeroshot            # zeroshot | llm | tfidf
+  zeroshot:
+    model: facebook/bart-large-mnli
+    device: auto               # auto | cuda | cpu
+    fp16: true                 # metade da precisao: cabe folgado nos 8GB da 4060 Ti
+    batch_size: 8
+    max_chars_per_chunk: 3500  # ~900 tokens; paginas sao agrupadas em chunks
+    multi_label: true
+  llm:
+    model: claude-sonnet-5
+    max_pages_per_call: 12
+    temperature: 0.0
+  tfidf:
+    model_path: models/tfidf_genre.joblib
+
+aggregation:
+  method: weighted_mean        # weighted_mean | mean | log_pool
+  weight_by_confidence: true
+  ema_alpha: null              # se definido, aplica media movel exponencial nas geracoes
+
+ground_truth:
+  enabled: true
+  providers: [google_books, open_library]
+  timeout: 15
+  cache_dir: data/cache/ground_truth
+  google_books_api_key: null   # opcional; sem chave o limite de requisicoes e menor
+
+output:
+  dir: results
+  save_plots: true
+  save_per_generation: true
