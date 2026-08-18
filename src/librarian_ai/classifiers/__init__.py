@@ -26,6 +26,10 @@ def build_classifier(cfg: Config) -> GenreClassifier:
             max_chars_per_chunk=int(cfg.get("classifier.zeroshot.max_chars_per_chunk", 3500)),
             multi_label=bool(cfg.get("classifier.zeroshot.multi_label", False)),
             sharpen=float(cfg.get("classifier.zeroshot.sharpen", 1.0)),
+            calibrate=bool(cfg.get("classifier.zeroshot.calibrate", True)),
+            calibration_strength=float(
+                cfg.get("classifier.zeroshot.calibration_strength", 0.5)
+            ),
         )
 
     if backend == "llm":

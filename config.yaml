@@ -49,6 +49,11 @@ classifier:
                               # que sigmoides independentes (medido: gap 6x maior)
     sharpen: 2.0              # contraste da distribuicao. Monotonico: nao muda o
                               # ranking, so evita que o peso por confianca fique inerte
+    calibrate: true           # remove o vies a priori do modelo sobre os rotulos.
+                              # Sem isso, 'Drama' vence quase sempre (vies medido: 4.2x)
+    calibration_strength: 0.6 # expoente alpha da calibracao, em [0, 1]. 0 = desligada,
+                              # 1 = total (superamplifica generos raros como Tragedia).
+                              # Ajuste com scripts/tune_calibration.py no SEU dataset
   llm:
     model: claude-sonnet-5
     max_pages_per_call: 12

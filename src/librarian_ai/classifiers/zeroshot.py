@@ -17,6 +17,17 @@ from .base import ClassificationResult, GenreClassifier, chunk_pages
 
 log = logging.getLogger(__name__)
 
+# Textos deliberadamente sem sinal de genero. A distribuicao que o modelo
+# produz sobre eles e, por construcao, o seu vies a priori sobre os rotulos.
+CALIBRATION_TEXTS: tuple[str, ...] = (
+    "N/A",
+    "This is a text.",
+    "The following pages contain the continuation of the previous chapter.",
+    "Chapter twelve. It was a day. He said something and then she replied.",
+    "The book was printed and bound. It has a cover, pages and a title.",
+)
+
+
 class ZeroShotClassifier(GenreClassifier):
     name = "zeroshot"
 
@@ -29,6 +40,8 @@ class ZeroShotClassifier(GenreClassifier):
         max_chars_per_chunk: int = 3500,
         multi_label: bool = False,
         sharpen: float = 1.0,
+        calibrate: bool = True,
+        calibration_strength: float = 0.5,
     ) -> None:
         self.model_name = model_name
         self.device_pref = device
@@ -37,6 +50,10 @@ class ZeroShotClassifier(GenreClassifier):
         self.max_chars_per_chunk = max_chars_per_chunk
         self.multi_label = multi_label
         self.sharpen = sharpen
+        self.calibrate = calibrate
+        self.calibration_strength = float(np.clip(calibration_strength, 0.0, 1.0))
+        self._prior: np.ndarray | None = None
+        self._calibrating = False
         self._pipe = None
         self._device: str | None = None
         self._labels = hypotheses()
@@ -79,6 +96,29 @@ class ZeroShotClassifier(GenreClassifier):
             **self._dtype_kwarg(dtype),
         }
         self._pipe = pipeline("zero-shot-classification", **kwargs)
+
+        if self.calibrate:
+            self._fit_prior()
+
+    def _fit_prior(self) -> None:
+        """Estima o vies do modelo sobre os rotulos usando texto sem conteudo.
+
+        Modelos NLI zero-shot nao tratam os rotulos de forma equanime: medido
+        neste projeto com bart-large-mnli, texto totalmente neutro ja recebia
+        Drama=0.176 contra Terror=0.042 -- um vies de 4.2x que fazia Dracula e
+        Frankenstein serem classificados como Drama. Dividir a saida por esse
+        prior (calibracao contextual, Zhao et al. 2021, "Calibrate Before Use")
+        remove o efeito sem precisar de dados rotulados.
+        """
+        self._calibrating = True
+        try:
+            prior = self.classify(list(CALIBRATION_TEXTS)).distribution
+        finally:
+            self._calibrating = False
+
+        # Piso evita divisao explosiva num rotulo que o modelo quase nunca usa.
+        self._prior = np.maximum(prior, 1e-3)
+        log.debug("prior calibrado: %s", np.round(self._prior, 4).tolist())
 
     @staticmethod
     def _dtype_kwarg(dtype) -> dict:
@@ -147,6 +187,14 @@ class ZeroShotClassifier(GenreClassifier):
         total = dist.sum()
         dist = dist / total if total > 0 else self.uniform()
 
+        if self._prior is not None and not self._calibrating and self.calibration_strength > 0:
+            # alpha=0 nao calibra (o vies de "Drama" passa inteiro); alpha=1
+            # calibra totalmente, mas superamplifica rotulos de prior muito
+            # baixo -- medido, "Tragedia" (prior 0.030) passava a vencer quase
+            # tudo. O expoente interpola entre os dois extremos.
+            dist = dist / np.power(self._prior, self.calibration_strength)
+            dist = dist / dist.sum()
+
         if self.sharpen and self.sharpen != 1.0:
             # Transformacao de potencia: monotonica, portanto NAO altera o
             # ranking de generos. Serve so para dar contraste a distribuicao,
@@ -161,6 +209,8 @@ class ZeroShotClassifier(GenreClassifier):
             backend=self.name,
             meta={"device": self._device, "model": self.model_name,
                   "batch_size": self.batch_size, "sharpen": self.sharpen,
+                  "calibrated": self._prior is not None,
+                  "calibration_strength": self.calibration_strength,
                   "multi_label": self.multi_label},
         )
 
