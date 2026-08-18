@@ -42,6 +42,16 @@ MATCH_THRESHOLD = 72.0
 
 
 @dataclass
+class Candidate:
+    """Um registro de catalogo que casou com o livro procurado."""
+
+    terms: list[str]
+    score: float
+    title: str | None = None
+    author: str | None = None
+
+
+@dataclass
 class GroundTruth:
     """Classificacao externa de um livro."""
 
@@ -97,11 +107,13 @@ class GroundTruthClient:
         cache_dir: Path | None = None,
         timeout: int = 15,
         google_books_api_key: str | None = None,
+        max_retries: int = 3,
     ) -> None:
         self.providers = providers or ["google_books", "open_library"]
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.timeout = timeout
         self.api_key = google_books_api_key
+        self.max_retries = max(1, max_retries)
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         if self.cache_dir:
@@ -169,33 +181,22 @@ class GroundTruthClient:
             params["q"] = f'intitle:"{title}"'
             items = self._get_json(GOOGLE_BOOKS_URL, params).get("items") or []
 
-        best_info: dict[str, Any] | None = None
-        best_score = 0.0
+        candidates: list[Candidate] = []
         for item in items:
             info = item.get("volumeInfo", {})
             if not info.get("categories"):
                 continue  # sem categoria o registro nao serve de ground truth
             score = score_match(title, author, info.get("title", ""), info.get("authors", []))
-            if score > best_score:
-                best_score, best_info = score, info
-
-        if not best_info or best_score < MATCH_THRESHOLD:
-            return GroundTruth(
-                found=False,
-                provider="google_books",
-                note=(
-                    "sem correspondencia confiavel "
-                    f"(melhor score {best_score:.0f} < {MATCH_THRESHOLD:.0f})"
-                ),
+            candidates.append(
+                Candidate(
+                    terms=list(info.get("categories", [])),
+                    score=score,
+                    title=info.get("title"),
+                    author=", ".join(info.get("authors", []) or []) or None,
+                )
             )
 
-        return build_ground_truth(
-            list(best_info.get("categories", [])),
-            "google_books",
-            best_info.get("title"),
-            ", ".join(best_info.get("authors", []) or []) or None,
-            best_score,
-        )
+        return build_ground_truth(candidates, "google_books")
 
     def _open_library(self, title: str, author: str | None) -> GroundTruth:
         params: dict[str, Any] = {
@@ -208,76 +209,120 @@ class GroundTruthClient:
 
         docs = self._get_json(OPEN_LIBRARY_URL, params).get("docs") or []
 
-        best: dict[str, Any] | None = None
-        best_score = 0.0
+        candidates: list[Candidate] = []
         for doc in docs:
             if not doc.get("subject"):
                 continue
             score = score_match(title, author, doc.get("title", ""), doc.get("author_name", []))
-            if score > best_score:
-                best, best_score = doc, score
-
-        if not best or best_score < MATCH_THRESHOLD:
-            return GroundTruth(
-                found=False,
-                provider="open_library",
-                note=(
-                    "sem correspondencia confiavel "
-                    f"(melhor score {best_score:.0f} < {MATCH_THRESHOLD:.0f})"
-                ),
+            # O Open Library devolve centenas de subjects, ordenados por
+            # frequencia entre as edicoes; truncar limita o ruido de cauda longa.
+            candidates.append(
+                Candidate(
+                    terms=list(doc.get("subject", []))[:40],
+                    score=score,
+                    title=doc.get("title"),
+                    author=", ".join(doc.get("author_name", []) or []) or None,
+                )
             )
 
-        # O Open Library devolve centenas de subjects, ordenados por frequencia
-        # entre as edicoes; truncar limita o ruido de cauda longa.
-        terms = list(best.get("subject", []))[:40]
-        return build_ground_truth(
-            terms,
-            "open_library",
-            best.get("title"),
-            ", ".join(best.get("author_name", []) or []) or None,
-            best_score,
-        )
+        return build_ground_truth(candidates, "open_library")
 
     def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
-        response = self.session.get(url, params=params, timeout=self.timeout)
-        response.raise_for_status()
-        return response.json()
+        """GET com backoff exponencial em 429/5xx.
+
+        O Google Books limita agressivamente por IP quando nao ha chave de API
+        (429 ja na primeira consulta, em rede compartilhada). O backoff cobre a
+        limitacao transitoria; a persistente cai para o proximo provedor.
+        """
+        delay = 1.0
+        last_exc: requests.RequestException | None = None
+
+        for attempt in range(self.max_retries):
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            if response.status_code in (429, 500, 502, 503, 504):
+                last_exc = requests.HTTPError(
+                    f"{response.status_code} de {url}", response=response
+                )
+                if attempt < self.max_retries - 1:
+                    retry_after = response.headers.get("Retry-After")
+                    wait = float(retry_after) if (retry_after or "").isdigit() else delay
+                    log.debug("HTTP %s; nova tentativa em %.1fs", response.status_code, wait)
+                    time.sleep(min(wait, 10.0))
+                    delay *= 2
+                    continue
+                raise last_exc
+            response.raise_for_status()
+            return response.json()
+
+        raise last_exc or requests.RequestException("falha ao consultar o provedor")
 
 
-def build_ground_truth(
-    terms: list[str],
-    provider: str,
-    title: str | None,
-    author: str | None,
-    score: float,
-) -> GroundTruth:
-    """Converte os termos externos em distribuicao sobre a taxonomia interna."""
-    mapped = map_external_terms(terms)
-    if not mapped:
+def build_ground_truth(candidates: list[Candidate], provider: str) -> GroundTruth:
+    """Consolida varios registros do catalogo em uma unica distribuicao.
+
+    Confiar em um unico registro e fragil: catalogos publicos misturam edicoes,
+    adaptacoes e traducoes sob o mesmo titulo. Medido no Open Library,
+    ``Frankenstein`` casava primeiro com uma adaptacao teatral e saia
+    classificado como "Drama". Agregar os assuntos de todas as edicoes que
+    passam do limiar, ponderando pela qualidade do casamento, dilui esse ruido:
+    generos citados por muitas edicoes dominam os que aparecem em uma so.
+    """
+    eligible = [c for c in candidates if c.score >= MATCH_THRESHOLD]
+    if not eligible:
+        best = max((c.score for c in candidates), default=0.0)
         return GroundTruth(
             found=False,
             provider=provider,
-            matched_title=title,
-            matched_author=author,
-            match_score=score,
-            raw_terms=terms,
-            note="registro encontrado, mas nenhuma categoria mapeou para a taxonomia interna",
+            note=(
+                "sem correspondencia confiavel "
+                f"(melhor score {best:.0f} < {MATCH_THRESHOLD:.0f})"
+            ),
         )
 
-    dist = np.zeros(N_GENRES, dtype=np.float64)
-    for gid, weight in mapped.items():
-        dist[GENRE_IDS.index(gid)] = weight
-    dist = dist / dist.sum()
+    eligible.sort(key=lambda c: c.score, reverse=True)
+    best = eligible[0]
 
+    dist = np.zeros(N_GENRES, dtype=np.float64)
+    used_terms: list[str] = []
+    seen: set[str] = set()
+    n_mapped = 0
+
+    for cand in eligible:
+        mapped = map_external_terms(cand.terms)
+        if not mapped:
+            continue
+        n_mapped += 1
+        # Peso pelo score normalizado: edicao que casa melhor influencia mais.
+        weight = cand.score / 100.0
+        for gid, value in mapped.items():
+            dist[GENRE_IDS.index(gid)] += weight * value
+        for term in cand.terms:
+            if term not in seen:
+                seen.add(term)
+                used_terms.append(term)
+
+    if dist.sum() <= 0:
+        return GroundTruth(
+            found=False,
+            provider=provider,
+            matched_title=best.title,
+            matched_author=best.author,
+            match_score=best.score,
+            raw_terms=used_terms[:40],
+            note="registros encontrados, mas nenhuma categoria mapeou para a taxonomia interna",
+        )
+
+    dist = dist / dist.sum()
     return GroundTruth(
         found=True,
         provider=provider,
-        matched_title=title,
-        matched_author=author,
-        match_score=score,
-        raw_terms=terms,
+        matched_title=best.title,
+        matched_author=best.author,
+        match_score=best.score,
+        raw_terms=used_terms[:40],
         distribution=dist,
         top_genre=GENRE_IDS[int(np.argmax(dist))],
+        note=f"consolidado a partir de {n_mapped} registro(s) do catalogo",
     )
 
 

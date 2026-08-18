@@ -17,7 +17,7 @@ from librarian_ai.aggregation import (
 from librarian_ai.agent import PageSelectionAgent
 from librarian_ai.classifiers.base import chunk_pages
 from librarian_ai.corpus import clean_page_text, parse_filename
-from librarian_ai.ground_truth import build_ground_truth, score_match
+from librarian_ai.ground_truth import Candidate, build_ground_truth, score_match
 from librarian_ai.pipeline import compute_reward, evaluate
 from librarian_ai.taxonomy import GENRE_IDS, N_GENRES, map_external_terms
 
@@ -266,7 +266,7 @@ def test_avaliacao_sem_ground_truth_nao_quebra():
 
 
 def test_avaliacao_detecta_acerto_top1():
-    gt = build_ground_truth(["Fiction / Horror"], "teste", "T", "A", 100.0)
+    gt = build_ground_truth([Candidate(terms=["Fiction / Horror"], score=100.0)], "teste")
     final = np.zeros(N_GENRES)
     final[GENRE_IDS.index("terror")] = 1.0
     m = evaluate(final, gt)
@@ -284,8 +284,30 @@ def test_score_baixo_para_livro_diferente():
 
 
 def test_termos_sem_mapeamento_nao_viram_ground_truth():
-    gt = build_ground_truth(["Accessible book"], "teste", "T", "A", 100.0)
+    gt = build_ground_truth([Candidate(terms=["Accessible book"], score=100.0)], "teste")
     assert not gt.found
+
+
+def test_candidato_abaixo_do_limiar_e_rejeitado():
+    gt = build_ground_truth([Candidate(terms=["Horror"], score=10.0)], "teste")
+    assert not gt.found
+
+
+def test_agregacao_de_edicoes_dilui_registro_destoante():
+    """Uma adaptacao teatral isolada nao deve sobrepor varias edicoes de terror
+    -- foi exatamente o caso do Frankenstein no Open Library."""
+    candidatos = [
+        Candidate(terms=["Drama"], score=100.0),
+        Candidate(terms=["Horror tales"], score=95.0),
+        Candidate(terms=["Gothic fiction"], score=93.0),
+        Candidate(terms=["Horror"], score=90.0),
+    ]
+    gt = build_ground_truth(candidatos, "teste")
+    assert gt.found and gt.top_genre == "terror"
+
+
+def test_sem_candidatos_devolve_nao_encontrado():
+    assert not build_ground_truth([], "teste").found
 
 
 @pytest.mark.parametrize(
