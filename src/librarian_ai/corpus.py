@@ -55,11 +55,65 @@ def clean_page_text(text: str) -> str:
     return text.strip()
 
 
+# Particulas que aparecem em minusculas DENTRO de nomes proprios e nao devem
+# desqualificar o lado como autor ("Machado de Assis", "Ludwig van Beethoven").
+_NAME_PARTICLES = frozenset(
+    {"de", "da", "do", "dos", "das", "del", "della", "di", "du",
+     "van", "von", "der", "den", "la", "le", "y", "e", "ibn", "bin"}
+)
+
+# Palavras iniciais tipicas de TITULO, nao de nome de pessoa.
+_TITLE_STARTERS = frozenset(
+    {"the", "a", "an", "o", "os", "as", "um", "uma", "el", "los", "las", "les"}
+)
+
+
+def _author_likeness(text: str) -> float:
+    """Pontua o quanto um trecho parece um nome de autor (maior = mais provavel).
+
+    Heuristica so pelo formato -- nao ha lista de autores. Os sinais foram
+    calibrados nos padroes reais de nome de arquivo do dataset:
+    particula minuscula dentro do nome ("Machado *de* Assis") e sinal forte de
+    autor, enquanto artigo inicial ou conectivo solto ("The", "and", "of") e
+    sinal forte de titulo.
+    """
+    words = text.split()
+    if not words or len(words) > 5:
+        return 0.0
+
+    score = 0.0
+    if 1 < len(words) <= 4:
+        score += 2.0
+
+    if words[0].lower() in _TITLE_STARTERS:
+        return 0.0  # "The Adventures ..." nunca e um nome de autor
+
+    has_particle = False
+    for w in words[1:]:
+        stripped = w.strip(".,")
+        if not stripped:
+            continue
+        if stripped[0].isupper():
+            continue
+        if stripped.lower() in _NAME_PARTICLES:
+            has_particle = True
+            continue
+        # Minuscula que nao e particula ("and", "of", "para") -> titulo.
+        return 0.0
+
+    if has_particle:
+        score += 2.0
+    if any(ch.isdigit() or ch in ":!?" for ch in text):
+        score -= 2.0
+    return max(0.0, score)
+
+
 def parse_filename(path: Path) -> tuple[str, str | None]:
     """Extrai (titulo, autor) do nome do arquivo, quando segue 'A - B'.
 
-    Heuristica: se um dos lados tem <= 4 palavras e comeca com maiuscula em
-    todas elas, tratamos esse lado como o autor.
+    Aceita as duas convencoes comuns ("Titulo - Autor" e "Autor - Titulo"),
+    escolhendo pelo lado que mais parece um nome de pessoa. Em caso de empate
+    assume "Titulo - Autor", que e a convencao mais frequente.
     """
     stem = _WHITESPACE.sub(" ", path.stem.replace("_", " ")).strip()
     parts = [p.strip() for p in _FILENAME_SPLIT.split(stem) if p.strip()]
@@ -67,14 +121,9 @@ def parse_filename(path: Path) -> tuple[str, str | None]:
         return stem, None
 
     left, right = parts[0], parts[1]
+    left_score, right_score = _author_likeness(left), _author_likeness(right)
 
-    def looks_like_author(s: str) -> bool:
-        words = s.split()
-        return 1 < len(words) <= 4 and all(w[:1].isupper() for w in words)
-
-    if looks_like_author(right) and not looks_like_author(left):
-        return left, right
-    if looks_like_author(left) and not looks_like_author(right):
+    if left_score > right_score:
         return right, left
     return left, right
 

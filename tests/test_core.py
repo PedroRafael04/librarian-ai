@@ -54,6 +54,12 @@ def test_junta_palavra_hifenizada_entre_linhas():
     assert "profundamente" in clean_page_text("profunda-\nmente triste")
 
 
+def test_extrai_titulo_e_autor_do_nome_do_arquivo():
+    titulo, autor = parse_filename(Path("Dom Casmurro - Machado de Assis.pdf"))
+    assert titulo == "Dom Casmurro"
+    assert autor == "Machado de Assis"
+
+
 def test_detecta_autor_no_lado_esquerdo():
     titulo, autor = parse_filename(Path("Bram Stoker - Dracula.pdf"))
     assert titulo == "Dracula"
@@ -280,3 +286,20 @@ def test_score_baixo_para_livro_diferente():
 def test_termos_sem_mapeamento_nao_viram_ground_truth():
     gt = build_ground_truth(["Accessible book"], "teste", "T", "A", 100.0)
     assert not gt.found
+
+
+@pytest.mark.parametrize(
+    "nome,titulo,autor",
+    [
+        ("Dom Casmurro - Machado de Assis", "Dom Casmurro", "Machado de Assis"),
+        ("Bram Stoker - Dracula", "Dracula", "Bram Stoker"),
+        ("Pride and Prejudice - Jane Austen", "Pride and Prejudice", "Jane Austen"),
+        ("The Adventures of Sherlock Holmes - Arthur Conan Doyle",
+         "The Adventures of Sherlock Holmes", "Arthur Conan Doyle"),
+        ("Mary Shelley - Frankenstein", "Frankenstein", "Mary Shelley"),
+        ("O Cortico - Aluisio Azevedo", "O Cortico", "Aluisio Azevedo"),
+        ("Ludwig van Beethoven - Cartas", "Cartas", "Ludwig van Beethoven"),
+    ],
+)
+def test_convencoes_de_nome_de_arquivo(nome, titulo, autor):
+    assert parse_filename(Path(f"{nome}.pdf")) == (titulo, autor)
