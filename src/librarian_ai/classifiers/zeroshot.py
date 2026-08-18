@@ -1,0 +1,157 @@
+"""Classificacao zero-shot por inferencia textual (NLI), acelerada por CUDA.
+
+O modelo (por padrao ``facebook/bart-large-mnli``) julga, para cada bloco de
+texto, o quanto ele acarreta a hipotese "This text is <genero>". Nao ha treino
+supervisionado: a taxonomia de ``taxonomy.py`` entra como rotulo candidato, o
+que permite mexer nos generos sem reanotar nada.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import numpy as np
+
+from ..taxonomy import N_GENRES, hypotheses
+from .base import ClassificationResult, GenreClassifier, chunk_pages
+
+log = logging.getLogger(__name__)
+
+class ZeroShotClassifier(GenreClassifier):
+    name = "zeroshot"
+
+    def __init__(
+        self,
+        model_name: str = "facebook/bart-large-mnli",
+        device: str = "auto",
+        fp16: bool = True,
+        batch_size: int = 8,
+        max_chars_per_chunk: int = 3500,
+        multi_label: bool = True,
+    ) -> None:
+        self.model_name = model_name
+        self.device_pref = device
+        self.fp16 = fp16
+        self.batch_size = batch_size
+        self.max_chars_per_chunk = max_chars_per_chunk
+        self.multi_label = multi_label
+        self._pipe = None
+        self._device: str | None = None
+        self._labels = hypotheses()
+
+    # -- ciclo de vida -----------------------------------------------------
+    def _resolve_device(self) -> tuple[int, str]:
+        """Devolve (device_index_para_pipeline, rotulo_legivel)."""
+        import torch
+
+        want = self.device_pref
+        if want == "cpu":
+            return -1, "cpu"
+        if want in ("auto", "cuda"):
+            if torch.cuda.is_available():
+                return 0, f"cuda:0 ({torch.cuda.get_device_name(0)})"
+            if want == "cuda":
+                raise RuntimeError(
+                    "device='cuda' pedido, mas torch.cuda.is_available() e False. "
+                    "Instale o torch com CUDA: "
+                    "pip install -r requirements-cuda.txt"
+                )
+            log.warning("CUDA indisponivel; caindo para CPU (bem mais lento)")
+            return -1, "cpu"
+        raise ValueError(f"device invalido: {self.device_pref!r}")
+
+    def warmup(self) -> None:
+        if self._pipe is not None:
+            return
+        import torch
+        from transformers import pipeline
+
+        device_idx, device_label = self._resolve_device()
+        self._device = device_label
+        dtype = torch.float16 if (self.fp16 and device_idx >= 0) else torch.float32
+
+        log.info("carregando %s em %s (dtype=%s)", self.model_name, device_label, dtype)
+        self._pipe = pipeline(
+            "zero-shot-classification",
+            model=self.model_name,
+            device=device_idx,
+            torch_dtype=dtype,
+        )
+
+    def close(self) -> None:
+        if self._pipe is None:
+            return
+        self._pipe = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # pragma: no cover
+            pass
+
+    # -- inferencia --------------------------------------------------------
+    def classify(self, pages: list[str]) -> ClassificationResult:
+        self.warmup()
+        chunks = chunk_pages(pages, self.max_chars_per_chunk)
+        if not chunks:
+            return ClassificationResult(self.uniform(), 0, self.name, {"empty": True})
+
+        scores = np.zeros(N_GENRES, dtype=np.float64)
+        weights = 0.0
+        processed = 0
+
+        for start in range(0, len(chunks), self.batch_size):
+            batch = chunks[start : start + self.batch_size]
+            try:
+                outputs = self._pipe(
+                    batch, candidate_labels=self._labels, multi_label=self.multi_label
+                )
+            except RuntimeError as exc:
+                if "out of memory" in str(exc).lower() and self.batch_size > 1:
+                    # 8GB de VRAM: com chunks longos o batch pode estourar.
+                    # Reduzir e seguir e melhor que abortar o experimento.
+                    self.batch_size = max(1, self.batch_size // 2)
+                    log.warning("VRAM insuficiente; batch_size -> %d", self.batch_size)
+                    self._empty_cache()
+                    return self.classify(pages)
+                raise
+
+            if isinstance(outputs, dict):
+                outputs = [outputs]
+
+            for chunk, out in zip(batch, outputs):
+                vec = self._to_vector(out)
+                # Chunks maiores carregam mais evidencia -> pesam mais na media.
+                w = float(len(chunk))
+                scores += w * vec
+                weights += w
+                processed += 1
+
+        dist = scores / weights if weights > 0 else self.uniform()
+        total = dist.sum()
+        dist = dist / total if total > 0 else self.uniform()
+
+        return ClassificationResult(
+            distribution=dist,
+            n_chunks=processed,
+            backend=self.name,
+            meta={"device": self._device, "model": self.model_name,
+                  "batch_size": self.batch_size},
+        )
+
+    def _to_vector(self, output: dict) -> np.ndarray:
+        """Reordena a saida do pipeline (ordenada por score) na ordem canonica."""
+        by_label = dict(zip(output["labels"], output["scores"]))
+        vec = np.array([by_label.get(h, 0.0) for h in self._labels], dtype=np.float64)
+        total = vec.sum()
+        # Em multi_label os scores sao sigmoides independentes e nao somam 1.
+        return vec / total if total > 0 else self.uniform()
+
+    @staticmethod
+    def _empty_cache() -> None:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # pragma: no cover
+            pass
