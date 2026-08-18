@@ -1,0 +1,5 @@
+# PyTorch com CUDA 12.8 (RTX 4060 Ti, Python 3.14).
+# Instale ANTES do requirements.txt:
+#   .venv\Scripts\python.exe -m pip install -r requirements-cuda.txt
+--index-url https://download.pytorch.org/whl/cu128
+torch>=2.11.0

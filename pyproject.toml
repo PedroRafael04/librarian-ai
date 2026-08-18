@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "librarian-ai"
+version = "0.1.0"
+description = "Classificacao de genero literario por amostragem de paginas guiada por RL"
+requires-python = ">=3.11"
+
+[project.scripts]
+librarian-ai = "librarian_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

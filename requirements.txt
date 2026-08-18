@@ -1,0 +1,17 @@
+# Núcleo do pipeline (CPU-only). Para a GPU, veja requirements-cuda.txt.
+pypdf>=5.1.0
+transformers>=4.46.0
+scikit-learn>=1.5.0
+numpy>=1.26.0
+scipy>=1.13.0
+PyYAML>=6.0.1
+requests>=2.32.0
+tqdm>=4.66.0
+rapidfuzz>=3.9.0
+matplotlib>=3.9.0
+
+# Backend opcional de classificação por LLM
+anthropic>=0.40.0
+
+# Desenvolvimento
+pytest>=8.0.0
