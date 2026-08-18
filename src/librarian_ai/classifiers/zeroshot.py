@@ -71,12 +71,26 @@ class ZeroShotClassifier(GenreClassifier):
         dtype = torch.float16 if (self.fp16 and device_idx >= 0) else torch.float32
 
         log.info("carregando %s em %s (dtype=%s)", self.model_name, device_label, dtype)
-        self._pipe = pipeline(
-            "zero-shot-classification",
-            model=self.model_name,
-            device=device_idx,
-            torch_dtype=dtype,
-        )
+        kwargs = {
+            "model": self.model_name,
+            "device": device_idx,
+            **self._dtype_kwarg(dtype),
+        }
+        self._pipe = pipeline("zero-shot-classification", **kwargs)
+
+    @staticmethod
+    def _dtype_kwarg(dtype) -> dict:
+        """transformers >= 5 renomeou ``torch_dtype`` para ``dtype``."""
+        import inspect
+
+        from transformers import pipeline
+
+        params = inspect.signature(pipeline).parameters
+        if "dtype" in params:
+            return {"dtype": dtype}
+        if "torch_dtype" in params:
+            return {"torch_dtype": dtype}
+        return {}
 
     def close(self) -> None:
         if self._pipe is None:
