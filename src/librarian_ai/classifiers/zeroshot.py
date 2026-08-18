@@ -27,7 +27,8 @@ class ZeroShotClassifier(GenreClassifier):
         fp16: bool = True,
         batch_size: int = 8,
         max_chars_per_chunk: int = 3500,
-        multi_label: bool = True,
+        multi_label: bool = False,
+        sharpen: float = 1.0,
     ) -> None:
         self.model_name = model_name
         self.device_pref = device
@@ -35,6 +36,7 @@ class ZeroShotClassifier(GenreClassifier):
         self.batch_size = batch_size
         self.max_chars_per_chunk = max_chars_per_chunk
         self.multi_label = multi_label
+        self.sharpen = sharpen
         self._pipe = None
         self._device: str | None = None
         self._labels = hypotheses()
@@ -145,12 +147,21 @@ class ZeroShotClassifier(GenreClassifier):
         total = dist.sum()
         dist = dist / total if total > 0 else self.uniform()
 
+        if self.sharpen and self.sharpen != 1.0:
+            # Transformacao de potencia: monotonica, portanto NAO altera o
+            # ranking de generos. Serve so para dar contraste a distribuicao,
+            # que sai bem achatada do NLI sobre 14 rotulos -- sem isso o peso
+            # por confianca na agregacao fica praticamente uniforme.
+            dist = np.power(dist, self.sharpen)
+            dist = dist / dist.sum()
+
         return ClassificationResult(
             distribution=dist,
             n_chunks=processed,
             backend=self.name,
             meta={"device": self._device, "model": self.model_name,
-                  "batch_size": self.batch_size},
+                  "batch_size": self.batch_size, "sharpen": self.sharpen,
+                  "multi_label": self.multi_label},
         )
 
     def _to_vector(self, output: dict) -> np.ndarray:

@@ -45,7 +45,10 @@ classifier:
     fp16: true                 # metade da precisao: cabe folgado nos 8GB da 4060 Ti
     batch_size: 8
     max_chars_per_chunk: 3500  # ~900 tokens; paginas sao agrupadas em chunks
-    multi_label: true
+    multi_label: false        # false = softmax entre generos; separa bem melhor
+                              # que sigmoides independentes (medido: gap 6x maior)
+    sharpen: 2.0              # contraste da distribuicao. Monotonico: nao muda o
+                              # ranking, so evita que o peso por confianca fique inerte
   llm:
     model: claude-sonnet-5
     max_pages_per_call: 12
